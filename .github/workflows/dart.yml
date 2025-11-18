@@ -28,7 +28,7 @@ on:
         default: ''
         type: string
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
 
 jobs:
   # Android 构建
