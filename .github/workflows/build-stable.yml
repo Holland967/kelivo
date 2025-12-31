@@ -52,6 +52,13 @@ on:
         default: ''
         type: string
 
+      # 是否为预发布版本
+      prerelease:
+        description: '是否为预发布版本 (Pre-release)'
+        required: false
+        default: false
+        type: boolean
+
 jobs:
   # Android 构建
   android:
@@ -91,6 +98,10 @@ jobs:
         id: version
         run: |
           VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          if [ "${{ github.event.inputs.publish_release }}" != "true" ]; then
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="${VERSION}_${SHORT_SHA}"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "版本号: $VERSION"
       # 如果有签名密钥，写入密钥文件
@@ -121,6 +132,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
           files: build/app/outputs/flutter-apk/Kelivo_android_*.apk
 
       - name: 📤 上传构建产物 (arm64-v8a)
@@ -172,6 +184,10 @@ jobs:
         id: version
         run: |
           VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          if [ "${{ github.event.inputs.publish_release }}" != "true" ]; then
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="${VERSION}_${SHORT_SHA}"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "版本号: $VERSION"
       - name: 🏗️ 构建 iOS (无签名)
@@ -187,6 +203,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
           files: Kelivo_ios_*.ipa
 
       - name: 📤 上传构建产物
@@ -225,6 +242,10 @@ jobs:
       - name: 📝 获取版本号
         run: |
           VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          if [ "${{ github.event.inputs.publish_release }}" != "true" ]; then
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="${VERSION}_${SHORT_SHA}"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
       - name: 🏗️ 构建 macOS
         run: flutter build macos --release
@@ -250,6 +271,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
           files: Kelivo_macos_*.dmg
 
       - name: 📤 上传构建产物
@@ -302,6 +324,10 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path pubspec.yaml -Pattern "version:" | ForEach-Object { $_.Line.Split(":")[1].Trim() })
+          if ("${{ github.event.inputs.publish_release }}" -ne "true") {
+            $shortSha = git rev-parse --short HEAD
+            $version = "$version`_$shortSha"
+          }
           echo "VERSION=$version" >> $env:GITHUB_ENV
           Write-Host "版本号: $version"
       - name: 🏗️ 构建 Windows
@@ -399,6 +425,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
           files: |
             Kelivo_windows_*.zip
             Kelivo_windows_*_setup.exe
@@ -452,9 +479,14 @@ jobs:
           EOF
       - name: 📝 获取版本号
         run: |
-          VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          RAW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          VERSION=$RAW_VERSION
+          if [ "${{ github.event.inputs.publish_release }}" != "true" ]; then
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="${VERSION}_${SHORT_SHA}"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "VERSION_NUMBER=$(echo $VERSION | cut -d'+' -f1)" >> $GITHUB_ENV
+          echo "VERSION_NUMBER=$(echo $RAW_VERSION | cut -d'+' -f1)" >> $GITHUB_ENV
       - name: 🏗️ 构建 Linux
         run: flutter build linux --release
 
@@ -471,6 +503,7 @@ jobs:
           # 创建 AppDir 结构
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/lib
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
           cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
           
           # 创建 AppRun 脚本
@@ -494,13 +527,16 @@ jobs:
           Categories=Utility;
           EOF
           
-          # 复制图标（如果存在）
-          if [ -f "linux/kelivo.png" ]; then
-            cp linux/kelivo.png AppDir/kelivo.png
-          else
-            # 创建一个简单的占位图标
-            touch AppDir/kelivo.png
+          ICON_SOURCE="linux/kelivo.png"
+          if [ ! -f "$ICON_SOURCE" ]; then
+            ICON_SOURCE="assets/app_icon.png"
           fi
+          if [ ! -f "$ICON_SOURCE" ]; then
+            echo "❌ Icon source not found"
+            exit 1
+          fi
+          install -Dm644 "$ICON_SOURCE" AppDir/kelivo.png
+          install -Dm644 "$ICON_SOURCE" "AppDir/usr/share/icons/hicolor/256x256/apps/kelivo.png"
           
           # 构建 AppImage
           ARCH=x86_64 ./appimagetool AppDir Kelivo_linux_${VERSION}.AppImage
@@ -514,6 +550,10 @@ jobs:
           
           # 复制文件
           cp -r build/linux/x64/release/bundle/* deb/opt/kelivo/
+          
+          # 创建 /usr/bin 软链接
+          mkdir -p deb/usr/bin
+          ln -s /opt/kelivo/kelivo deb/usr/bin/kelivo
           
           # 创建 control 文件
           cat > deb/DEBIAN/control << EOF
@@ -537,6 +577,16 @@ jobs:
           Type=Application
           Categories=Utility;
           EOF
+
+          ICON_SOURCE="linux/kelivo.png"
+          if [ ! -f "$ICON_SOURCE" ]; then
+            ICON_SOURCE="assets/app_icon.png"
+          fi
+          if [ ! -f "$ICON_SOURCE" ]; then
+            echo "❌ Icon source not found"
+            exit 1
+          fi
+          install -Dm644 "$ICON_SOURCE" deb/usr/share/icons/hicolor/256x256/apps/kelivo.png
           
           # 创建启动脚本
           cat > deb/opt/kelivo/kelivo.sh << 'EOF'
@@ -556,6 +606,15 @@ jobs:
           # 创建源码目录
           mkdir -p kelivo-${VERSION_NUMBER}
           cp -r build/linux/x64/release/bundle/* kelivo-${VERSION_NUMBER}/
+          ICON_SOURCE="linux/kelivo.png"
+          if [ ! -f "$ICON_SOURCE" ]; then
+            ICON_SOURCE="assets/app_icon.png"
+          fi
+          if [ ! -f "$ICON_SOURCE" ]; then
+            echo "❌ Icon source not found"
+            exit 1
+          fi
+          cp "$ICON_SOURCE" kelivo-${VERSION_NUMBER}/kelivo.png
           tar -czf ~/rpmbuild/SOURCES/kelivo-${VERSION_NUMBER}.tar.gz kelivo-${VERSION_NUMBER}
           
           # 创建 spec 文件
@@ -579,6 +638,9 @@ jobs:
           mkdir -p %{buildroot}/opt/kelivo
           cp -r * %{buildroot}/opt/kelivo/
           
+          mkdir -p %{buildroot}/usr/bin
+          ln -s /opt/kelivo/kelivo %{buildroot}/usr/bin/kelivo
+          
           mkdir -p %{buildroot}/usr/share/applications
           cat > %{buildroot}/usr/share/applications/kelivo.desktop << 'DESKTOPEOF'
           [Desktop Entry]
@@ -588,10 +650,15 @@ jobs:
           Type=Application
           Categories=Utility;
           DESKTOPEOF
+
+          mkdir -p %{buildroot}/usr/share/icons/hicolor/256x256/apps
+          cp kelivo.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/kelivo.png
           
           %files
           /opt/kelivo/*
+          /usr/bin/kelivo
           /usr/share/applications/kelivo.desktop
+          /usr/share/icons/hicolor/256x256/apps/kelivo.png
           
           %changelog
           * $(date "+%a %b %d %Y") Psyche <your@email.com> - ${VERSION_NUMBER}-1
@@ -607,6 +674,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
           files: |
             Kelivo_linux_*.tar.gz
             Kelivo_linux_*.AppImage

@@ -13,19 +13,28 @@ import '../../../shared/widgets/ios_tactile.dart';
 import '../../model/widgets/ocr_prompt_sheet.dart';
 
 class BottomToolsSheet extends StatelessWidget {
-  const BottomToolsSheet({super.key, this.onCamera, this.onPhotos, this.onUpload, this.onClear, this.clearLabel});
+  const BottomToolsSheet({
+    super.key,
+    this.onCamera,
+    this.onPhotos,
+    this.onUpload,
+    this.onClear,
+    this.clearLabel,
+    this.assistantId,
+  });
 
   final VoidCallback? onCamera;
   final VoidCallback? onPhotos;
   final VoidCallback? onUpload;
   final VoidCallback? onClear;
   final String? clearLabel;
+  final String? assistantId;
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final bg = Theme.of(context).colorScheme.surface;
-    final maxHeight = MediaQuery.of(context).size.height * 0.8;
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.8;
 
     Widget roundedAction({required IconData icon, required String label, VoidCallback? onTap}) {
       final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -116,7 +125,11 @@ class BottomToolsSheet extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    _LearningAndClearSection(clearLabel: clearLabel, onClear: onClear),
+                    _LearningAndClearSection(
+                      clearLabel: clearLabel,
+                      onClear: onClear,
+                      assistantId: assistantId,
+                    ),
                   ],
                 ),
               ),
@@ -129,9 +142,10 @@ class BottomToolsSheet extends StatelessWidget {
 }
 
 class _LearningAndClearSection extends StatefulWidget {
-  const _LearningAndClearSection({this.onClear, this.clearLabel});
+  const _LearningAndClearSection({this.onClear, this.clearLabel, this.assistantId});
   final VoidCallback? onClear;
   final String? clearLabel;
+  final String? assistantId;
 
   @override
   State<_LearningAndClearSection> createState() => _LearningAndClearSectionState();
@@ -190,11 +204,11 @@ class _LearningAndClearSectionState extends State<_LearningAndClearSection> {
                 label: items[i].title.trim().isEmpty
                     ? l10n.instructionInjectionDefaultTitle
                     : items[i].title,
-                selected: provider.isActive(items[i].id),
+                selected: provider.isActive(items[i].id, assistantId: widget.assistantId),
                 onTap: () async {
                   Haptics.light();
                   final p = context.read<InstructionInjectionProvider>();
-                  await p.toggleActiveId(items[i].id);
+                  await p.toggleActiveId(items[i].id, assistantId: widget.assistantId);
                 },
                 onLongPress: () => _editInstructionInjectionPrompt(context, items[i]),
               ),
@@ -235,7 +249,7 @@ class _LearningAndClearSectionState extends State<_LearningAndClearSection> {
     await provider.initialize();
     final items = provider.items;
     if (items.isEmpty) return;
-    final target = provider.active ?? items.first;
+    final target = provider.activeFor(widget.assistantId) ?? items.first;
     await _editInstructionInjectionPrompt(context, target);
   }
 }
@@ -291,7 +305,7 @@ Future<void> _editInstructionInjectionPrompt(BuildContext context, InstructionIn
           left: 16,
           right: 16,
           top: 12,
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+          bottom: MediaQuery.viewInsetsOf(ctx).bottom + 16,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,

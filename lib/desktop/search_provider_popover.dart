@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../icons/lucide_adapter.dart';
 import '../core/providers/settings_provider.dart';
 import '../core/providers/assistant_provider.dart';
+import '../core/services/api/builtin_tools.dart';
 import '../core/services/search/search_service.dart';
 import '../utils/brand_assets.dart';
 import '../l10n/app_localizations.dart';
@@ -188,19 +189,22 @@ class _SearchContent extends StatelessWidget {
     final modelId = a?.chatModelId ?? settings.currentModelId;
     if (providerKey == null || (modelId ?? '').isEmpty) return false;
     final cfg = settings.getProviderConfig(providerKey);
-    final isOfficialGemini = cfg.providerType == ProviderKind.google && (cfg.vertexAI != true);
+    final isGemini = cfg.providerType == ProviderKind.google;
     final isClaude = cfg.providerType == ProviderKind.claude;
     final isOpenAIResponses = cfg.providerType == ProviderKind.openai && (cfg.useResponseApi == true);
-    if (!(isOfficialGemini || isClaude || isOpenAIResponses)) return false;
+    final isGrok = cfg.providerType == ProviderKind.openai && (modelId ?? '').toLowerCase().contains('grok');
+    if (!(isGemini || isClaude || isOpenAIResponses || isGrok)) return false;
     final mid = modelId!.toLowerCase();
+    if (isGrok) return true; // All Grok models assumed to support search
     if (isClaude) {
       const supported = <String>{
-        'claude-opus-4-1-20250805',
-        'claude-opus-4-20250514',
+        'claude-sonnet-4-5-20250929',
         'claude-sonnet-4-20250514',
         'claude-3-7-sonnet-20250219',
-        'claude-3-5-sonnet-latest',
+        'claude-haiku-4-5-20251001',
         'claude-3-5-haiku-latest',
+        'claude-opus-4-1-20250805',
+        'claude-opus-4-20250514',
       };
       if (!supported.contains(mid)) return false;
     }
@@ -219,15 +223,28 @@ class _SearchContent extends StatelessWidget {
     return true;
   }
 
+  bool _hasUrlContextEnabled(SettingsProvider settings, AssistantProvider ap) {
+    final a = ap.currentAssistant;
+    final providerKey = a?.chatModelProvider ?? settings.currentModelProvider;
+    final modelId = a?.chatModelId ?? settings.currentModelId;
+    if (providerKey == null || (modelId ?? '').isEmpty) return false;
+    final cfg = settings.getProviderConfig(providerKey);
+    final rawOv = cfg.modelOverrides[modelId!] ;
+    final ov = rawOv is Map ? rawOv : null;
+    final tools = BuiltInToolNames.parseAndNormalize(ov?['builtInTools']);
+    return tools.contains(BuiltInToolNames.urlContext);
+  }
+
   bool _hasBuiltInSearchEnabled(SettingsProvider settings, AssistantProvider ap) {
     final a = ap.currentAssistant;
     final providerKey = a?.chatModelProvider ?? settings.currentModelProvider;
     final modelId = a?.chatModelId ?? settings.currentModelId;
     if (providerKey == null || (modelId ?? '').isEmpty) return false;
     final cfg = settings.getProviderConfig(providerKey);
-    final ov = cfg.modelOverrides[modelId!] as Map?;
-    final list = (ov?['builtInTools'] as List?) ?? const <dynamic>[];
-    return list.map((e) => e.toString().toLowerCase()).contains('search');
+    final rawOv = cfg.modelOverrides[modelId!] ;
+    final ov = rawOv is Map ? rawOv : null;
+    final tools = BuiltInToolNames.parseAndNormalize(ov?['builtInTools']);
+    return tools.contains(BuiltInToolNames.search);
   }
 
   Future<void> _enableBuiltInSearch(BuildContext context) async {
@@ -239,10 +256,12 @@ class _SearchContent extends StatelessWidget {
     if (providerKey == null || (modelId ?? '').isEmpty) return;
     final cfg = sp.getProviderConfig(providerKey);
     final overrides = Map<String, dynamic>.from(cfg.modelOverrides);
-    final mo = Map<String, dynamic>.from((overrides[modelId!] as Map?)?.map((k, v) => MapEntry(k.toString(), v)) ?? const <String, dynamic>{});
-    final list = List<String>.from(((mo['builtInTools'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
-    if (!list.map((e) => e.toLowerCase()).contains('search')) list.add('search');
-    mo['builtInTools'] = list;
+    final rawMo = overrides[modelId!];
+    final existingMo = rawMo is Map ? rawMo : null;
+    final mo = Map<String, dynamic>.from(existingMo?.map((k, v) => MapEntry(k.toString(), v)) ?? const <String, dynamic>{});
+
+    final tools = BuiltInToolNames.parseAndNormalize(mo['builtInTools'])..add(BuiltInToolNames.search);
+    mo['builtInTools'] = BuiltInToolNames.orderedForStorage(tools);
     overrides[modelId] = mo;
     await sp.setProviderConfig(providerKey, cfg.copyWith(modelOverrides: overrides));
     await sp.setSearchEnabled(false);
@@ -257,10 +276,16 @@ class _SearchContent extends StatelessWidget {
     if (providerKey == null || (modelId ?? '').isEmpty) return;
     final cfg = sp.getProviderConfig(providerKey);
     final overrides = Map<String, dynamic>.from(cfg.modelOverrides);
-    final mo = Map<String, dynamic>.from((overrides[modelId!] as Map?)?.map((k, v) => MapEntry(k.toString(), v)) ?? const <String, dynamic>{});
-    final list = List<String>.from(((mo['builtInTools'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
-    list.removeWhere((e) => e.toLowerCase() == 'search');
-    mo['builtInTools'] = list;
+    final rawMo = overrides[modelId!];
+    final existingMo = rawMo is Map ? rawMo : null;
+    final mo = Map<String, dynamic>.from(existingMo?.map((k, v) => MapEntry(k.toString(), v)) ?? const <String, dynamic>{});
+
+    final tools = BuiltInToolNames.parseAndNormalize(mo['builtInTools'])..remove(BuiltInToolNames.search);
+    if (tools.isEmpty) {
+      mo.remove('builtInTools');
+    } else {
+      mo['builtInTools'] = BuiltInToolNames.orderedForStorage(tools);
+    }
     overrides[modelId] = mo;
     await sp.setProviderConfig(providerKey, cfg.copyWith(modelOverrides: overrides));
   }
@@ -277,6 +302,9 @@ class _SearchContent extends StatelessWidget {
     final enabled = sp.searchEnabled;
     final supportsBuiltIn = _supportsBuiltInSearch(sp, ap);
     final builtInEnabled = _hasBuiltInSearchEnabled(sp, ap);
+    final hasUrlContext = _hasUrlContextEnabled(sp, ap);
+    // When url_context is active, treat as built-in mode (hide external search options)
+    final builtInMode = builtInEnabled || hasUrlContext;
 
     final rows = <Widget>[];
 
@@ -305,23 +333,25 @@ class _SearchContent extends StatelessWidget {
       ));
     }
 
-    // 3) External services list
-    for (int i = 0; i < services.length; i++) {
-      final s = services[i];
-      final svc = SearchService.getService(s);
-      final name = svc.name;
-      final isSelectedActive = !builtInEnabled && enabled && (i == selected);
-      rows.add(_RowItem(
-        leading: _BrandIcon(name: name),
-        label: name,
-        selected: isSelectedActive,
-        onTap: () async {
-          await context.read<SettingsProvider>().setSearchServiceSelected(i);
-          await _disableBuiltInSearch(context);
-          await context.read<SettingsProvider>().setSearchEnabled(true);
-          onDone();
-        },
-      ));
+    // 3) External services list (hidden when url_context is active)
+    if (!builtInMode) {
+      for (int i = 0; i < services.length; i++) {
+        final s = services[i];
+        final svc = SearchService.getService(s);
+        final name = svc.name;
+        final isSelectedActive = enabled && (i == selected);
+        rows.add(_RowItem(
+          leading: _BrandIcon(name: name),
+          label: name,
+          selected: isSelectedActive,
+          onTap: () async {
+            await context.read<SettingsProvider>().setSearchServiceSelected(i);
+            await _disableBuiltInSearch(context);
+            await context.read<SettingsProvider>().setSearchEnabled(true);
+            onDone();
+          },
+        ));
+      }
     }
 
     return Padding(

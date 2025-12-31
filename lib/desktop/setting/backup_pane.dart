@@ -11,6 +11,7 @@ import '../../core/providers/backup_provider.dart';
 import '../../core/providers/settings_provider.dart';
 import '../../core/services/chat/chat_service.dart';
 import '../../core/services/backup/cherry_importer.dart';
+import '../../core/services/backup/chatbox_importer.dart';
 import '../../shared/widgets/ios_switch.dart';
 import '../../shared/widgets/snackbar.dart';
 
@@ -370,6 +371,41 @@ class _DesktopBackupPaneState extends State<DesktopBackupPane> {
                         ));
                       }
                     }),
+                    _DeskIosButton(label: l10n.backupPageImportFromChatbox, filled: false, dense: true, onTap: () async {
+                      final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json'], allowMultiple: false);
+                      final path = result?.files.single.path;
+                      if (path == null) return;
+                      final f = File(path);
+                      final mode = await showDialog<RestoreMode>(context: context, builder: (_) => _RestoreModeDialog());
+                      if (mode == null) return;
+                      final settings = context.read<SettingsProvider>();
+                      final chat = context.read<ChatService>();
+                      try {
+                        final res = await ChatboxImporter.importFromChatbox(file: f, mode: mode, settings: settings, chatService: chat);
+                        await showDialog(context: context, builder: (_) => AlertDialog(
+                          backgroundColor: cs.surface,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          title: Text(l10n.backupPageRestartRequired),
+                          content: Text(
+                            '${l10n.backupPageImportFromChatbox}:\n'
+                            ' • Providers: ${res.providers}\n'
+                            ' • Assistants: ${res.assistants}\n'
+                            ' • Conversations: ${res.conversations}\n'
+                            ' • Messages: ${res.messages}\n\n'
+                            '${l10n.backupPageRestartContent}',
+                          ),
+                          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: Text(l10n.backupPageOK))],
+                        ));
+                      } catch (e) {
+                        await showDialog(context: context, builder: (_) => AlertDialog(
+                          backgroundColor: cs.surface,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          title: Text('Error'),
+                          content: Text(e.toString()),
+                          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: Text(l10n.backupPageOK))],
+                        ));
+                      }
+                    }),
                   ]),
                 ]),
               ),
@@ -438,7 +474,7 @@ class _RemoteItemCardState extends State<_RemoteItemCard> {
               ),
             ),
             const SizedBox(width: 8),
-            Tooltip(message: l10n.backupPageRestoreTooltip, child: _SmallIconBtn(icon: lucide.Lucide.RotateCw, onTap: widget.onRestore)),
+            Tooltip(message: l10n.backupPageRestoreTooltip, child: _SmallIconBtn(icon: lucide.Lucide.Import, onTap: widget.onRestore)),
             const SizedBox(width: 6),
             Tooltip(message: l10n.backupPageDeleteTooltip, child: _SmallIconBtn(icon: lucide.Lucide.Trash2, onTap: widget.onDelete)),
           ],

@@ -104,7 +104,7 @@ class DataSync {
   }
 
   Future<File> prepareBackupFile(WebDavConfig cfg) async {
-    final tmp = await getTemporaryDirectory();
+    final tmp = await _ensureTempDir();
     final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
     final outFile = File(p.join(tmp.path, 'kelivo_backup_$timestamp.zip'));
     if (await outFile.exists()) await outFile.delete();
@@ -272,7 +272,7 @@ class DataSync {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('Download failed: ${res.statusCode}');
     }
-    final tmpDir = await getTemporaryDirectory();
+    final tmpDir = await _ensureTempDir();
     final file = File(p.join(tmpDir.path, item.displayName));
     await file.writeAsBytes(res.bodyBytes);
     await _restoreFromBackupFile(file, cfg, mode: mode);
@@ -296,8 +296,20 @@ class DataSync {
   }
 
   // ===== Internal helpers =====
+  /// Ensures the temporary directory exists (some macOS installs may not create the cache folder until first use).
+  Future<Directory> _ensureTempDir() async {
+    Directory dir = await getTemporaryDirectory();
+    if (!await dir.exists()) {
+      try { await dir.create(recursive: true); } catch (_) {}
+    }
+    if (!await dir.exists()) {
+      dir = await Directory.systemTemp.createTemp('kelivo_tmp_');
+    }
+    return dir;
+  }
+
   Future<File> _writeTempText(String name, String content) async {
-    final tmp = await getTemporaryDirectory();
+    final tmp = await _ensureTempDir();
     final f = File(p.join(tmp.path, name));
     await f.writeAsString(content);
     return f;
@@ -328,6 +340,7 @@ class DataSync {
     final conversations = chatService.getAllConversations();
     final allMsgs = <ChatMessage>[];
     final toolEvents = <String, List<Map<String, dynamic>>>{};
+    final geminiThoughtSigs = <String, String>{};
     for (final c in conversations) {
       final msgs = chatService.getMessages(c.id);
       allMsgs.addAll(msgs);
@@ -335,6 +348,8 @@ class DataSync {
         if (m.role == 'assistant') {
           final ev = chatService.getToolEvents(m.id);
           if (ev.isNotEmpty) toolEvents[m.id] = ev;
+          final sig = chatService.getGeminiThoughtSignature(m.id);
+          if (sig != null && sig.isNotEmpty) geminiThoughtSigs[m.id] = sig;
         }
       }
     }
@@ -343,13 +358,14 @@ class DataSync {
       'conversations': conversations.map((c) => c.toJson()).toList(),
       'messages': allMsgs.map((m) => m.toJson()).toList(),
       'toolEvents': toolEvents,
+      'geminiThoughtSigs': geminiThoughtSigs,
     };
     return jsonEncode(obj);
   }
 
   Future<void> _restoreFromBackupFile(File file, WebDavConfig cfg, {RestoreMode mode = RestoreMode.overwrite}) async {
     // Extract to temp
-    final tmp = await getTemporaryDirectory();
+    final tmp = await _ensureTempDir();
     final extractDir = Directory(p.join(tmp.path, 'restore_${DateTime.now().millisecondsSinceEpoch}'));
     await extractDir.create(recursive: true);
     final bytes = await file.readAsBytes();
@@ -593,6 +609,8 @@ class DataSync {
             const <ChatMessage>[];
         final toolEvents = ((obj['toolEvents'] as Map?) ?? const <String, dynamic>{})
             .map((k, v) => MapEntry(k.toString(), (v as List).cast<Map>().map((e) => e.cast<String, dynamic>()).toList()));
+        final geminiThoughtSigs = ((obj['geminiThoughtSigs'] as Map?) ?? const <String, dynamic>{})
+            .map((k, v) => MapEntry(k.toString(), v.toString()));
         
         if (mode == RestoreMode.overwrite) {
           // Clear and restore via ChatService
@@ -608,6 +626,9 @@ class DataSync {
           // Tool events
           for (final entry in toolEvents.entries) {
             try { await chatService.setToolEvents(entry.key, entry.value); } catch (_) {}
+          }
+          for (final entry in geminiThoughtSigs.entries) {
+            try { await chatService.setGeminiThoughtSignature(entry.key, entry.value); } catch (_) {}
           }
         } else {
           // Merge mode: Add only non-existing conversations and messages
@@ -648,6 +669,12 @@ class DataSync {
             final existing = chatService.getToolEvents(entry.key);
             if (existing.isEmpty) {
               try { await chatService.setToolEvents(entry.key, entry.value); } catch (_) {}
+            }
+          }
+          for (final entry in geminiThoughtSigs.entries) {
+            final existingSig = chatService.getGeminiThoughtSignature(entry.key);
+            if (existingSig == null || existingSig.isEmpty) {
+              try { await chatService.setGeminiThoughtSignature(entry.key, entry.value); } catch (_) {}
             }
           }
         }
@@ -780,6 +807,15 @@ class DataSync {
 class SharedPreferencesAsync {
   SharedPreferencesAsync._();
   static SharedPreferencesAsync? _inst;
+  // Local window state keys stay on device and are excluded from backups
+  static const _localOnlyKeys = {
+    'window_width_v1',
+    'window_height_v1',
+    'window_pos_x_v1',
+    'window_pos_y_v1',
+    'window_maximized_v1',
+  };
+
   static Future<SharedPreferencesAsync> get instance async {
     _inst ??= SharedPreferencesAsync._();
     return _inst!;
@@ -790,6 +826,7 @@ class SharedPreferencesAsync {
     final keys = prefs.getKeys();
     final map = <String, dynamic>{};
     for (final k in keys) {
+      if (_localOnlyKeys.contains(k)) continue;
       map[k] = prefs.get(k);
     }
     return map;
@@ -800,6 +837,7 @@ class SharedPreferencesAsync {
     for (final entry in data.entries) {
       final k = entry.key;
       final v = entry.value;
+      if (_localOnlyKeys.contains(k)) continue;
       if (v is bool) await prefs.setBool(k, v);
       else if (v is int) await prefs.setInt(k, v);
       else if (v is double) await prefs.setDouble(k, v);
@@ -811,6 +849,7 @@ class SharedPreferencesAsync {
   }
   
   Future<void> restoreSingle(String key, dynamic value) async {
+    if (_localOnlyKeys.contains(key)) return;
     final prefs = await SharedPreferences.getInstance();
     if (value is bool) await prefs.setBool(key, value);
     else if (value is int) await prefs.setInt(key, value);
